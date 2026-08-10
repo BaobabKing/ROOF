@@ -18,7 +18,7 @@ if Debug==1
   figure, imshow(pixel_labels,[]), axis on; impixelinfo; title('image labeled by cluster index');
 end
 %%Create Images that Segment the H&E Image by Color.
-segmented_images = cell(1,5);
+segmented_images = cell(1,nColors);
 for k = 1:nColors
     segmented_images{k} = pixel_labels==k;
 end
@@ -41,8 +41,8 @@ if Debug==1
     figure, imshow(rgb); title('K-means clustering');impixelinfo;
 end
 
-%% Assign the cluster to the Background with the lowest
-%%intensity in all channels  
+%% Assign the cluster to the Background if it has the lowest
+%%intensity across all channels  
 [~,ind1] = min(cluster_center(:,1));
 [~,ind2] = min(cluster_center(:,2));
 [~,ind3] = min(cluster_center(:,3));
@@ -52,46 +52,34 @@ background_seg = segmented_images{G_ind};
 if disp_seg == 1
   figure, imshow(background_seg); axis on; title('Background');
 end
-%% Assign the cluster to the Nucleus with the highest 
-%%intensity in 3rd channel  
-[~, N_ind ] = max(cluster_center(:,3));
+% DAPI expression pixels corresponds to the row label of the highest 
+% intensity in the first column of cluster_center.   
+[~, N_ind ] = max(cluster_center(:,1));
 Nucleus_seg = segmented_images{N_ind};
 if disp_seg == 1
   figure, imshow(Nucleus_seg); axis on; title('Nucleus'); 
 end
 
-%% Assign the cluster to the CK with the highest 
-%%intensity in 1st channel  
-[~, CKinds ] = sort(cluster_center(:,1));
-CKinds(CKinds==G_ind)=[];
-CKinds(CKinds==N_ind)=[];
-CK_ind = CKinds(end);
+%% CK expression pixels corresponds to the row label of the highest 
+% intensity element in the 3rd column of cluster_center.  
+[~, CK_ind ] = max(cluster_center(:,3));
 CK_seg = segmented_images{CK_ind};
 if disp_seg == 1
    figure, imshow(CK_seg); axis on; title('CK'); 
 end
 
-%% Assign the cluster to the WBC with the lowest  
-%%intensity in 2nd channel  
-[~, Finds ] = sort(cluster_center(:,2));
-% Delete GInd from Find
-Finds(Finds==G_ind)=[];
-Finds(Finds==N_ind)=[];
-Finds(Finds==CK_ind)=[];
-if cluster_center(Finds(1), 4)<cluster_center(Finds(2), 4)
-   F_ind = Finds(1);
-else
-   F_ind = Finds(2);
-end
+%% WBC membrane expression pixels orresponds to the row label of the highest 
+% intensity element in the 2nd column of cluster_center.  
+[~, F_ind ] = max(cluster_center(:,2));
 WBC_seg = segmented_images{F_ind};
 if disp_seg == 1
-  figure, imshow(WBC_seg); axis on; title('WBC'); 
+  figure, imshow(WBC_seg); axis on; title('WBC membran marker'); 
 end
 
-%% Assign the cluster to the Customs that was not G_ind, CK_ind, N_ind, or F_ind.  
-Custom_ind = 1:5;
-Custom_ind([G_ind CK_ind N_ind F_ind])=[];
-Custom_seg = segmented_images{Custom_ind};
+%% Custom marker expression pixels orresponds to the row label of the highest 
+% intensity element in the 4th column of cluster_center.  
+[~,C_ind ] = max(cluster_center(:,4));
+Custom_seg = segmented_images{C_ind};
 if disp_seg == 1
    figure, imshow(Custom_seg); axis on; title('Customers'); 
 end

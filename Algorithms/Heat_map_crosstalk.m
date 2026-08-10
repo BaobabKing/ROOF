@@ -11,7 +11,7 @@ for i=1:size(data,3)
     X(:,i) = tmp(:);
 end
 
-R_Heat_Map = corrcoef(double(X));
+R_Heat_Map = corrcoef(double(X))
 nan_ind = isnan(R_Heat_Map);
 R_Heat_Map(nan_ind) = 0;
 for r=1:size(data,3)
