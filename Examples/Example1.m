@@ -1,4 +1,4 @@
-% EXAMPLE     test run on simulated image.
+% EXAMPLE:    Test on simulated image.
 %
 % 
 % 
@@ -13,103 +13,140 @@ clear;	% Delete all variables.
 close all;	% Close all figure windows except those created by imtool.
 workspace;	% Make sure the workspace panel is showing.
 
-cd ..;   s = cd; s0=s;  s = [s, '\Algorithms']; path(s, path); cd Examples;
+cd ..;   s = cd; s0 = s;  s = [s, '\Algorithms']; path(s, path); cd Examples;
   
    
 % Please select an algorithm ID
 CC_Methods ={'ROOF','PICASSO', 'BINGO'};
-Crosstalk_correction_method = CC_Methods{1}; % 1 - 'ROOF'; % 2- 'PICASSO'; % 3- 'BINGO'.        
+Crosstalk_correction_method = CC_Methods{2}; % 1 - 'ROOF'; % 2- 'PICASSO'; % 3- 'BINGO'.        
+Y_factor = 1.2; % select from {0.75 1 1.2}; % To be used only for ROOF simulation experiments.
 
-Segmented_area_only ='No'; %'Yes'; % 
-if strcmp(Crosstalk_correction_method,'ROOF')
-   Segmented_area_only = 'Yes'; % 
-end
+
 
 
 pathname_input = [s0,'\TestImages\Simulated\'];
 Pathname_save = [ s0, '\ExperimentResults\Simulated\'];
-save_corrected_data = 'No'; 'Yes';
-save_HeatMap = 'No';  
+save_corrected_data = 'No'; % 'Yes';% 
+save_corrected_data_method = 'bin'; %'png'; %   
 
 % image size 
-Ht = 512; Wd = 512; % image size
-num_channels = 4;
+height = 512; width = 512; % image size
+num_Channels = 4;
 
 
-%%% Load smimulated data with crosstalk and noise
-data_raw = zeros(Ht,Wd, num_channels,'uint16');
-data_raw(:,:,1) = imread([pathname_input,'data_raw_ch1']);
-data_raw(:,:,2) = imread([pathname_input,'data_raw_ch2']);
-data_raw(:,:,3) = imread([pathname_input,'data_raw_ch3']);
-data_raw(:,:,4) = imread([pathname_input,'data_raw_ch4']);
+%%% Load smimulated data with crosstalk and noise at different levels
+SNR = 5; % or any of {30 25 20 15 10 5};
+FileName = ['raw_data_SNR',num2str(SNR),'.bin'];
+disp(FileName)
+
+imgSize=2*height*width;
+header=0;
+tail=0;
+data_raw = uint16(zeros(height,width,num_Channels));
+
+fb = fopen([pathname_input filesep FileName],'rb');
+for n=1:num_Channels
+     % read in images
+     fseek(fb, header + (n - 1)*(imgSize + tail),'bof');
+     tmp = fread(fb, [width,height], 'uint16');
+     data_raw(:,:,n) = tmp;
+end
+fclose(fb);
+
+%%% Load groundtruth data
+data_groundtruth = uint16(zeros(height,width,num_Channels)); 
+fileName = 'groundtruth_data.bin';
+fid = fopen([pathname_input filesep fileName],'rb');
+for n=1:num_Channels
+     % read in images
+     fseek(fid, header + (n - 1)*(imgSize + tail),'bof');
+     tmp = fread(fid, [width,height], 'uint16');
+     data_groundtruth(:,:,n) = tmp;
+end
+fclose(fid);
+
+%  
+%%% For ROOF and BINGO algorithms to run properly, the channel index of the "for-correction" data needs to be in wavelength ascending order.
+% The simulated data does not follow the right order requiring swapping of channels 1 and 3.
+%%% Swap channels 1 and 3 
+tmp = data_raw(:,:,1);
+data_raw(:,:,1) = data_raw(:,:,3);
+data_raw(:,:,3) = tmp;
+
+tmp = data_groundtruth(:,:,1);
+data_groundtruth(:,:,1) = data_groundtruth(:,:,3);
+data_groundtruth(:,:,3) = tmp;
+
+%%% Side note: PICASSO algorithm is not invariant with respect to channel ordering. 
+% You may test to see: how Metric aSAR varies if channels 1 and 3 are swapped.
 
 
 %%% Raw data preprocessing: 
- % Estimate background and foreground mask 
+ % Find background mask  
+% Convert data_raw to MIP (Maximum Intensity Projection) 
+I = max(data_groundtruth,[],3);
+Background_mask = I==0;
+% figure, imshow(Background_mask);
 
-[IRGB, mask]  = KmeanClustering(data_raw, 5);
 
-Background_mask = mask(:,:,5);
+% Estimate background for background removal
 Background = zeros(4,1);
-for k = 1:num_channels
+for k = 1:num_Channels
     tmp = double(squeeze(data_raw(:,:,k)));
     Background(k) =  mean2(tmp(Background_mask)) + mad(tmp(Background_mask));
 
 end
-% Subtract background from raw data
+% Subtract background from raw data (resulting in "for-correction data").
 data_raw_bgrem = data_raw; % Initialize badk removed data
-for i = 1:num_channels
+for i = 1:num_Channels
     data_raw_bgrem(:,:,i) = double(data_raw(:,:,i)) - Background(i);
 end
 
-        
-Titl = 'Crosstalk heat map of raw image';
-Tot_Crosstalk_raw = Heat_map_crosstalk(data_raw_bgrem,Titl, save_HeatMap);
+ 
+
+% Visulize the for-correction image by channels
+figure('name','Nucleus'), imshow(data_raw_bgrem(:,:,1),[]); axis on; impixelinfo; imcontrast(gca);
+figure('name','WBC marker'), imshow(data_raw_bgrem(:,:,2),[]); axis on; impixelinfo; imcontrast(gca); 
+figure('name','CK'), imshow(data_raw_bgrem(:,:,3),[]); axis on; impixelinfo; imcontrast(gca);
+figure('name','Customers'), imshow(data_raw_bgrem(:,:,4),[]); axis on; impixelinfo; imcontrast(gca);
 
 
 if strcmp(Crosstalk_correction_method,'ROOF')
 
-    %%% ROOF algorithm starts 
-    % Flatten each band and create data matrix
-    [rows, cols] = find(~Background_mask==1);
+    % Reshape 3D data into 2D by flattening each channel into a column vector
+    X0 = reshape(data_raw_bgrem, [], num_Channels);
+        
+    % Extract only foreground pixels
+    [rows, cols] = find(Background_mask==0);
     num_pixels_foreground = numel(rows);
-    I1 = zeros(num_pixels_foreground,1,'uint16');
-    I2 = zeros(num_pixels_foreground,1,'uint16');
-    I3 = zeros(num_pixels_foreground,1,'uint16');
-    I4 = zeros(num_pixels_foreground,1,'uint16');
-    
-    for q=1:num_pixels_foreground
-       I1(q) = data_raw_bgrem(rows(q),cols(q),1);
-       I2(q) = data_raw_bgrem(rows(q),cols(q),2);
-       I3(q) = data_raw_bgrem(rows(q),cols(q),3);
-       I4(q) = data_raw_bgrem(rows(q),cols(q),4);
+    Foreground_mask = ~Background_mask(:);
+    X = zeros(num_pixels_foreground,num_Channels);
+
+    for j=1:num_Channels
+       X(:,j) = X0(Foreground_mask,j);
     end
-    
-    X = [I1 I2 I3 I4];
 
 elseif strcmp(Crosstalk_correction_method,'BINGO')
-
-    X = zeros(Ht*Wd, num_channels,'uint16');
-
-    for i=1:num_channels
-        tmp = data_raw_bgrem(:,:,i);
-        X(:,i) = double(tmp(:));
-    end
+    
+    % Reshape 3D data into 2D by flattening each channel into a column vector
+    X = reshape(data_raw_bgrem, [], num_Channels);
 
 end
 
-% Setup groundtruth channel crosstalk matrix (arranged in channel order: ch1,ch2,ch3 ,ch4. 
+% Setup groundtruth channel crosstalk matrix (arranged in channel order: ch1, ch2,ch3 ,ch4. 
 Wg = [1  0.005  0   0;   0.205  1  0.006 0.006; 0.0100 0.2750 1  0.0720; 0.1900 0.0120  0.0230  1];
+% Wg =[1  0.006  0  0.023; 0.275 1 0.005 0.012;0.01 0.205 1 0.190; 0.072 0.006 0 1];
+% Wg = crosstalk_refomulate_if_twochannels_swarpped(Wg', 1, 3);
 
 switch Crosstalk_correction_method 
 
     case 'ROOF'
 
         % Puprposely modify the control estimated crosstalk to be different to groundtruth Wg.
-        % Y = 0.75*Wg; % Undercorrection case
-        % Y = Wg; % Ideal correction case
-        Y = 1.2*Wg; % Overcorrection case
-        for p=1:num_channels
+        Y = Y_factor*Wg; % Y_factor = 0.75 Undercorrection case
+                         % Y_factor = 1; Ideal correction case
+                         % Y_factor = 1.2; Overcorrection case
+        for p=1:num_Channels
            Y(p,p) = 1;  % set each diagonal element in Y to unity. 
         end
         
@@ -120,17 +157,16 @@ switch Crosstalk_correction_method
         maxiter = 15; 
         tStart = tic;
         [Xc,Wgc] = ROOF_unmixing(X, Y, alpha, eps, maxiter, size(data_raw_bgrem,1), size(data_raw_bgrem,2)); % adpative alpha 
-         tElapsed = toc(tStart);
+        tElapsed = toc(tStart);
         
         
-        % Convert flatten data back to images  
-        data_raw_unmixed = zeros(Ht,Wd,num_channels,'uint16');
-        for q=1:num_pixels_foreground
-            data_raw_unmixed(rows(q),cols(q),1) = Xc(q,1);
-            data_raw_unmixed(rows(q),cols(q),2) = Xc(q,2);
-            data_raw_unmixed(rows(q),cols(q),3) = Xc(q,3);
-            data_raw_unmixed(rows(q),cols(q),4) = Xc(q,4);
-                        
+        % Convert the corrected flattened data back to 3D image  
+        data_raw_unmixed = zeros(height,width,num_Channels,'uint16');
+        
+        for kk=1:num_Channels
+            for q=1:num_pixels_foreground
+                data_raw_unmixed(rows(q),cols(q),kk) = Xc(q,kk);              
+            end
         end
 
     case 'PICASSO'  % Junnyoung Seo, Yeonbo Sim et al 2022
@@ -145,7 +181,7 @@ switch Crosstalk_correction_method
             [data_raw_unmixed, unmixing_log] = PICASSO_4C(data_raw_bgrem, qN, maxIter, step_size, 0);
             Wgc = inv(unmixing_log.UMM);
             tElapsed = toc(tStart);
-
+            % Reshape 2D corrected data back to 3D tensor form
             data_raw_unmixed = uint16(data_raw_unmixed);
 
     case 'BINGO'
@@ -160,7 +196,7 @@ switch Crosstalk_correction_method
             [Xc, Wgc] = BINGO_unmixing(X, r, alpha, mu, eps, maxiter, spH);
             tElapsed = toc(tStart);
 
-            data_raw_unmixed = reshape(uint16(Xc),Ht, Wd, 4);
+            data_raw_unmixed = reshape(uint16(Xc),height, width, 4);
 
     otherwise
 
@@ -168,41 +204,40 @@ switch Crosstalk_correction_method
         return;
 
 end
+
 % Visulize the corrected image by channels
-figure('name','Unmixed Nucleus'), imshow(data_raw_unmixed(:,:,1),[]); axis on; impixelinfo; imcontrast(gca);
-figure('name','Unmixed False'), imshow(data_raw_unmixed(:,:,2),[]); axis on; impixelinfo; imcontrast(gca); 
-figure('name','Unmixed CK'), imshow(data_raw_unmixed(:,:,3),[]); axis on; impixelinfo; imcontrast(gca);
-figure('name','Unmixed customers'), imshow(data_raw_unmixed(:,:,4),[]); axis on; impixelinfo; imcontrast(gca);
+figure('name','Corrected Nucleus'), imshow(data_raw_unmixed(:,:,1),[]); axis on; impixelinfo; imcontrast(gca);
+figure('name','Corrected WBC marker'), imshow(data_raw_unmixed(:,:,2),[]); axis on; impixelinfo; imcontrast(gca); 
+figure('name','Corrected CK'), imshow(data_raw_unmixed(:,:,3),[]); axis on; impixelinfo; imcontrast(gca);
+figure('name','Corrected Customer marker'), imshow(data_raw_unmixed(:,:,4),[]); axis on; impixelinfo; imcontrast(gca);
 
 if strcmp(save_corrected_data,'Yes')
-
-    Filename_save = [Crosstalk_correction_method,'_data_ch1'];
-    imwrite(uint16(data_raw_unmixed(:,:,1)),[Pathname_save,Filename_save],'png');
-    Filename_save = [Crosstalk_correction_method,'_data_ch2'];
-    imwrite(uint16(data_raw_unmixed(:,:,2)),[Pathname_save,Filename_save],'png');
-    Filename_save = [Crosstalk_correction_method,'_data_ch3'];
-    imwrite(uint16(data_raw_unmixed(:,:,3)),[Pathname_save,Filename_save],'png');
-    Filename_save = [Crosstalk_correction_method,'_data_ch4'];
-    imwrite(uint16(data_raw_unmixed(:,:,4)),[Pathname_save,Filename_save],'png');
-
+    %%% save as png or bin format
+    if strcmp(save_corrected_data_method,'png')
+        Filename_save = [Crosstalk_correction_method,'_data_ch1'];
+        imwrite(uint16(data_raw_unmixed(:,:,1)),[Pathname_save,Filename_save],'png');
+        Filename_save = [Crosstalk_correction_method,'_data_ch2'];
+        imwrite(uint16(data_raw_unmixed(:,:,2)),[Pathname_save,Filename_save],'png');
+        Filename_save = [Crosstalk_correction_method,'_data_ch3'];
+        imwrite(uint16(data_raw_unmixed(:,:,3)),[Pathname_save,Filename_save],'png');
+        Filename_save = [Crosstalk_correction_method,'_data_ch4'];
+        imwrite(uint16(data_raw_unmixed(:,:,4)),[Pathname_save,Filename_save],'png');
+    
+    elseif strcmp(save_corrected_data_method,'bin')
+        
+        if strcmp(Crosstalk_correction_method,'ROOF')
+            Filename_save = [Crosstalk_correction_method,'_corrected_data_SNR',num2str(SNR),'_Y',num2str(Y_factor), '.bin'];
+        else
+            Filename_save = [Crosstalk_correction_method,'_corrected_data_SNR',num2str(SNR(1)),'.bin'];
+        end
+        fid = fopen([Pathname_save, Filename_save],'w');
+        fwrite(fid,data_raw_unmixed,'uint16');
+        fclose(fid);
+    end
 end
     
-composite_display(uint16(data_raw_unmixed), [1 1 1 1]); title('Unmixed data composite'); axis on;
-
-decorrstretched_view_Dx(data_raw_unmixed); title('Unmixed composite decor');
-
 
 %%% Performonance quantification
-% To compare RMSE, load groundthruth data
-data_groundtruth = zeros(Ht,Wd, num_channels,'uint16');
-data_groundtruth(:,:,1) = imread([pathname_input,'groundtruth_data_ch1']);
-data_groundtruth(:,:,2) = imread([pathname_input,'groundtruth_data_ch2']);
-data_groundtruth(:,:,3) = imread([pathname_input,'groundtruth_data_ch3']);
-data_groundtruth(:,:,4) = imread([pathname_input,'groundtruth_data_ch4']);
-
-Tot_Crosstalk_corrected = Heat_map_crosstalk(data_raw_unmixed,Titl, save_HeatMap);
-
-
 SSIM = ssim(data_raw_unmixed,data_groundtruth);  
 disp(['SSIM = ', num2str(SSIM)]);
 
@@ -215,3 +250,4 @@ disp(['aRMSE = ', num2str(aRMSE)]);
 
 disp(['Runtime (sec) = ', num2str(tElapsed)]) 
 
+% End of test
